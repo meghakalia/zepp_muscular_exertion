@@ -25,6 +25,17 @@ SESSIONS = [
     ('20251230_WTTADQTQLRFVOBWA_HT_6kg', 78.0, 6.0, 32, 58, 'male'),
 ]
 
+# Sample sessions: (exercise_type, folder, eq_kg, family, bw_kg, age, rhr, gender)
+SAMPLE_SESSIONS = [
+    ('skierg',             'sample_skierg',             0.0,   'rep',  78.0, 32, 58, 'male'),
+    ('rowing',             'sample_rowing',             0.0,   'rep',  78.0, 32, 58, 'male'),
+    ('sandbag_lunges',     'sample_sandbag_lunges',     20.0,  'rep',  78.0, 32, 58, 'male'),
+    ('burpee_broad_jumps', 'sample_burpee_broad_jumps', 0.0,   'rep',  78.0, 32, 58, 'male'),
+    ('farmers_carry',      'sample_farmers_carry',      24.0,  'time', 78.0, 32, 58, 'male'),
+    ('sled_push',          'sample_sled_push',          100.0, 'time', 78.0, 32, 58, 'male'),
+    ('sled_pull',          'sample_sled_pull',          100.0, 'time', 78.0, 32, 58, 'male'),
+]
+
 
 def normalize_columns(df):
     """Strip units like (ms), (m), (bpm) from column names."""
@@ -115,12 +126,52 @@ def print_result(r):
         print(f"    Ratio:            muscular {m_pct:.1f}% / cardiac {c_pct:.1f}%")
 
 
-def plot_sessions(results):
+def run_sample_session(exercise_type, name, eq_wt, family, bw, age, rhr, gender):
+    """Run muscular + cardiac exertion for one sample session (any exercise type)."""
+    session_dir = os.path.join(DATA_DIR, name)
+    hr_df = normalize_columns(pd.read_csv(os.path.join(session_dir, 'hr.csv')))
+    sets_df = normalize_columns(pd.read_csv(os.path.join(session_dir, 'sets.csv')))
+
+    if family == 'rep':
+        reps_df, _, _ = load_and_prepare(session_dir)
+        result = calculate_exertion(
+            exercise_type,
+            motions_df=reps_df,
+            body_weight_kg=bw,
+            equipment_weight_kg=eq_wt,
+        )
+    else:
+        ts_df = pd.read_csv(os.path.join(session_dir, 'time_series.csv'))
+        set_boundaries = list(zip(sets_df['start_time'], sets_df['stop_time']))
+        result = calculate_exertion(
+            exercise_type,
+            time_series_df=ts_df,
+            body_weight_kg=bw,
+            equipment_weight_kg=eq_wt,
+            set_boundaries=set_boundaries,
+        )
+
+    hr_max = 207 - 0.7 * age
+    hrs = [h for h in hr_df.iloc[:, 1].tolist() if h > 0]
+    cardiac = compute_cardiac_exertion(hrs, hr_max, rhr, gender=gender)
+    combined = compute_combined_exertion(result['muscular_exertion'], cardiac['cardiac_exertion'])
+
+    return {
+        'name': exercise_type,
+        'muscular': result,
+        'cardiac': cardiac,
+        'combined': combined,
+        'hr_max': hr_max,
+        'valid_hrs': len(hrs),
+    }
+
+
+def plot_sessions(results, filename='exertion_plot.png'):
     import matplotlib.pyplot as plt
 
     n = len(results)
     fig, axes = plt.subplots(n, 1, figsize=(7, 3.5 * n))
-    fig.suptitle("Wall Ball Exertion", fontsize=13, fontweight='bold')
+    fig.suptitle("Exertion Breakdown", fontsize=13, fontweight='bold')
     if n == 1:
         axes = [axes]
 
@@ -151,15 +202,16 @@ def plot_sessions(results):
                     f'{val:.3f}', va='center', fontsize=8)
 
     plt.tight_layout()
-    plt.savefig('exertion_plot.png', dpi=150, bbox_inches='tight')
-    print("\n[plot saved → exertion_plot.png]")
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
+    print(f"\n[plot saved → {filename}]")
     plt.show()
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--plot', action='store_true', help='Plot exertion breakdown')
+    parser.add_argument('--plot', action='store_true', help='Plot exertion breakdown for real sessions')
+    parser.add_argument('--plot_sampled_data', action='store_true', help='Run and plot exertion for all sample_* sessions')
     args = parser.parse_args()
 
     print("=" * 60)
@@ -177,3 +229,16 @@ if __name__ == '__main__':
 
     if args.plot:
         plot_sessions(all_results)
+
+    if args.plot_sampled_data:
+        print("\n" + "=" * 60)
+        print("Sample Sessions Exertion")
+        print("=" * 60)
+        sample_results = []
+        for ex_type, folder, eq_wt, family, bw, age, rhr, gender in SAMPLE_SESSIONS:
+            print(f"\n--- {ex_type} ({folder}) ---")
+            r = run_sample_session(ex_type, folder, eq_wt, family, bw, age, rhr, gender)
+            print_result(r)
+            sample_results.append(r)
+        print()
+        plot_sessions(sample_results, filename='sample_data.png')
