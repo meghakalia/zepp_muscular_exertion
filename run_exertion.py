@@ -85,8 +85,12 @@ def run_session(name, bw, eq_wt, age, rhr, gender):
 
     # Cardiac exertion (Banister TRIMP)
     hr_max = 207 - 0.7 * age  # Gellish formula
-    hrs = [h for h in hr_df.iloc[:, 1].tolist() if h > 0]
-    cardiac = compute_cardiac_exertion(hrs, hr_max, rhr, gender=gender)
+    hr_timestamps = hr_df.iloc[:, 0].tolist()
+    hr_values = hr_df.iloc[:, 1].tolist()
+    valid_pairs = [(t, h) for t, h in zip(hr_timestamps, hr_values) if h > 0]
+    ts_list, hrs = (list(zip(*valid_pairs)) if valid_pairs else ([], []))
+    ts_list, hrs = list(ts_list), list(hrs)
+    cardiac = compute_cardiac_exertion(hrs, hr_max, rhr, gender=gender, timestamps=ts_list)
     combined = compute_combined_exertion(result['muscular_exertion'], cardiac['cardiac_exertion'])
 
     return {
@@ -152,8 +156,12 @@ def run_sample_session(exercise_type, name, eq_wt, family, bw, age, rhr, gender)
         )
 
     hr_max = 207 - 0.7 * age
-    hrs = [h for h in hr_df.iloc[:, 1].tolist() if h > 0]
-    cardiac = compute_cardiac_exertion(hrs, hr_max, rhr, gender=gender)
+    hr_timestamps = hr_df.iloc[:, 0].tolist()
+    hr_values = hr_df.iloc[:, 1].tolist()
+    valid_pairs = [(t, h) for t, h in zip(hr_timestamps, hr_values) if h > 0]
+    ts_list, hrs = (list(zip(*valid_pairs)) if valid_pairs else ([], []))
+    ts_list, hrs = list(ts_list), list(hrs)
+    cardiac = compute_cardiac_exertion(hrs, hr_max, rhr, gender=gender, timestamps=ts_list)
     combined = compute_combined_exertion(result['muscular_exertion'], cardiac['cardiac_exertion'])
 
     return {
@@ -204,6 +212,136 @@ def plot_sessions(results, filename='exertion_plot.png'):
     plt.tight_layout()
     plt.savefig(filename, dpi=150, bbox_inches='tight')
     print(f"\n[plot saved → {filename}]")
+    # plt.show()
+
+
+FOLDER_TO_EXERCISE = {
+    'wallball':      'wall_ball',
+    'burpee_broad_jumps': 'burpee_broad_jumps',
+    'walking_lunges': 'sandbag_lunges',
+    'sandbag_lunges': 'sandbag_lunges',
+    'skierg':         'skierg',
+    'rowing':         'rowing',
+}
+
+
+def run_user_date_sessions(user_id, date, bw=78.0, eq_wt=6.0, age=32, rhr=58, gender='male'):
+    """Run exertion for all exercise folders under data/{user_id}/{date}/."""
+    import json
+    session_dir = os.path.join(DATA_DIR, str(user_id), str(date))
+    if not os.path.isdir(session_dir):
+        raise FileNotFoundError(f"Session folder not found: {session_dir}")
+
+    user_info_path = os.path.join(session_dir, 'user_info.json')
+    if os.path.exists(user_info_path):
+        with open(user_info_path) as f:
+            info = json.load(f)
+        bw      = info.get('body_weight_kg', bw)
+        age     = info.get('age', age)
+        rhr     = info.get('rhr', rhr)
+        gender  = info.get('gender', gender)
+        print(f"[user_info.json] age={age}, rhr={rhr}, bw={bw}kg, gender={gender}")
+    else:
+        print(f"  [warning] user_info.json missing in {session_dir} — using defaults")
+
+    results = []
+    for folder_name in sorted(os.listdir(session_dir)):
+        folder_path = os.path.join(session_dir, folder_name)
+        if not os.path.isdir(folder_path):
+            continue
+        required = ['reps.csv', 'sets.csv', 'hr.csv']
+        if not all(os.path.exists(os.path.join(folder_path, f)) for f in required):
+            continue
+
+        exercise_type = FOLDER_TO_EXERCISE.get(folder_name)
+        if exercise_type is None:
+            print(f"  [skip] unknown exercise folder: {folder_name}")
+            continue
+
+        reps_df, sets_df, hr_df = load_and_prepare(folder_path)
+
+        # Extract mean RPE if available
+        rpe = None
+        if 'rpe' in sets_df.columns:
+            valid = sets_df['rpe'].dropna()
+            if len(valid) > 0:
+                rpe = valid.mean()
+
+        result = calculate_exertion(
+            exercise_type,
+            motions_df=reps_df,
+            body_weight_kg=bw,
+            equipment_weight_kg=eq_wt,
+        )
+
+        hr_max = 207 - 0.7 * age
+        hr_timestamps = hr_df.iloc[:, 0].tolist()
+        hr_values = hr_df.iloc[:, 1].tolist()
+        valid_pairs = [(t, h) for t, h in zip(hr_timestamps, hr_values) if h > 0]
+        ts_list, hrs = (list(zip(*valid_pairs)) if valid_pairs else ([], []))
+        ts_list, hrs = list(ts_list), list(hrs)
+        cardiac = compute_cardiac_exertion(hrs, hr_max, rhr, gender=gender, timestamps=ts_list)
+        combined = compute_combined_exertion(result['muscular_exertion'], cardiac['cardiac_exertion'])
+
+        results.append({
+            'name': folder_name,
+            'muscular': result,
+            'cardiac': cardiac,
+            'combined': combined,
+            'hr_max': hr_max,
+            'valid_hrs': len(hrs),
+            'rpe': rpe,
+        })
+
+    return results
+
+
+def plot_user_date_sessions(results, filename='user_date_plot.png'):
+    import matplotlib.pyplot as plt
+
+    n = len(results)
+    fig, axes = plt.subplots(n, 1, figsize=(7, 3.5 * n))
+    fig.suptitle("Exertion Breakdown", fontsize=13, fontweight='bold')
+    if n == 1:
+        axes = [axes]
+
+    for ax, r in zip(axes, results):
+        m = r['muscular']['muscular_exertion']
+        c = r['cardiac']['cardiac_exertion']
+        combined = r['combined']['combined_exertion']
+        rpe = r.get('rpe')
+
+        if rpe is not None:
+            labels = ['RPE (avg)', 'Muscular', 'Cardiac', 'Combined']
+            values = [rpe, m, c, combined]
+            colors = ['#70AD47', '#4472C4', '#C0504D', '#1A1A1A']
+            alphas = [0.6,       0.4,       0.4,       1.0      ]
+            edgews = [0,         0,         0,         2        ]
+        else:
+            labels = ['Muscular', 'Cardiac', 'Combined']
+            values = [m, c, combined]
+            colors = ['#4472C4', '#C0504D', '#1A1A1A']
+            alphas = [0.4,       0.4,       1.0      ]
+            edgews = [0,         0,         2        ]
+
+        bars = ax.barh(labels, values, color=colors, height=0.5)
+        for bar, a, lw, col in zip(bars, alphas, edgews, colors):
+            bar.set_alpha(a)
+            bar.set_linewidth(lw)
+            bar.set_edgecolor('#1A1A1A' if lw > 0 else col)
+
+        ax.set_title(r['name'], fontsize=9, loc='left')
+        ax.set_xlabel('Exertion', fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, axis='x', alpha=0.2)
+
+        for bar, val in zip(bars, values):
+            ax.text(val + 0.002, bar.get_y() + bar.get_height() / 2,
+                    f'{val:.3f}', va='center', fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
+    print(f"\n[plot saved → {filename}]")
     plt.show()
 
 
@@ -212,6 +350,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--plot', action='store_true', help='Plot exertion breakdown for real sessions')
     parser.add_argument('--plot_sampled_data', action='store_true', help='Run and plot exertion for all sample_* sessions')
+    parser.add_argument('--plot_user_date', action='store_false', help='Plot exertion for all exercises under data/{user_id}/{date}/')
+    parser.add_argument('--user_id', default='3095587934', help='User ID folder name (default: 3095278624)')
+    parser.add_argument('--date', default='2026-03-25', help='Session date folder name (default: 2026-04-01)')
+    parser.add_argument('--bw', type=float, default=78.0, help='Body weight in kg (default: 78.0)')
+    parser.add_argument('--eq_wt', type=float, default=6.0, help='Equipment weight in kg (default: 6.0)')
+    parser.add_argument('--age', type=int, default=32, help='Age in years (default: 32)')
+    parser.add_argument('--rhr', type=int, default=58, help='Resting heart rate (default: 58)')
+    parser.add_argument('--gender', default='male', help='Gender: male or female (default: male)')
     args = parser.parse_args()
 
     print("=" * 60)
@@ -242,3 +388,19 @@ if __name__ == '__main__':
             sample_results.append(r)
         print()
         plot_sessions(sample_results, filename='sample_data.png')
+
+    if args.plot_user_date:
+        print("\n" + "=" * 60)
+        print(f"User {args.user_id} — {args.date}")
+        print("=" * 60)
+        ud_results = run_user_date_sessions(
+            args.user_id, args.date,
+            bw=args.bw, eq_wt=args.eq_wt, age=args.age, rhr=args.rhr, gender=args.gender,
+        )
+        for r in ud_results:
+            print(f"\n--- {r['name']} ---")
+            print_result(r)
+            if r['rpe'] is not None:
+                print(f"  RPE (avg):          {r['rpe']:.1f}")
+        print()
+        plot_user_date_sessions(ud_results, filename=f"{args.user_id}_{args.date}_plot.png")

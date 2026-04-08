@@ -215,35 +215,53 @@ TRIMP_PARAMS = {
 }
 
 
-def compute_cardiac_exertion(hrs, hr_max, hr_rest, gender='male'):
+def compute_cardiac_exertion(hrs, hr_max, hr_rest, gender='male', timestamps=None):
     """
     Compute cardiac exertion using Banister's exponential TRIMP.
 
-    Banister TRIMP: each second contributes (1/60) * hr_r * a * exp(b * hr_r).
+    Banister TRIMP: each sample contributes duration_min * hr_r * a * exp(b * hr_r).
     - HR validity: 30 < hr < 200
     - Median filter (window=3) for noise smoothing
+
+    Duration per sample is derived from timestamps (ms):
+    - No timestamps: assumes per-second data (1/60 min per sample)
+    - Single timestamp: treats the reading as 1-minute HR
+    - Multiple timestamps: interval between consecutive timestamps (ms → min)
 
     Parameters
     ----------
     hrs : list or array
-        Per-second heart rate values.
+        Heart rate values (per-second or per-minute depending on source).
     hr_max : float
         Maximum heart rate
     hr_rest : float
         Resting heart rate
     gender : str
         'male' or 'female' (default 'male')
+    timestamps : list or None
+        Millisecond timestamps corresponding to each HR value (optional).
 
     Returns
     -------
     dict with cardiac_exertion (float) and valid_samples (int)
     """
-    params = TRIMP_PARAMS.get(gender.lower(), TRIMP_PARAMS['male'])
+    params = TRIMP_PARAMS.get(gender.lower(), TRIMP_PARAMS[gender.lower()])
     a, b = params['a'], params['b']
 
     hr_range = hr_max - hr_rest
     if hr_range <= 0:
         return {'cardiac_exertion': 0.0, 'valid_samples': 0}
+
+    # Compute per-sample duration in minutes from timestamps
+    if timestamps is not None and len(timestamps) == 1:
+        durations = [1.0]  # single point → 1-minute HR reading
+    elif timestamps is not None and len(timestamps) >= 2:
+        intervals = [(timestamps[i + 1] - timestamps[i]) / 1000.0 / 60.0
+                     for i in range(len(timestamps) - 1)]
+        intervals.append(intervals[-1])  # last sample reuses previous interval
+        durations = intervals
+    else:
+        durations = [1.0 / 60.0] * len(hrs)  # per-second default
 
     # Running median filter (window=3), matching Strain implementation
     filtered = []
@@ -255,13 +273,13 @@ def compute_cardiac_exertion(hrs, hr_max, hr_rest, gender='male'):
     total_trimp = 0.0
     valid = 0
 
-    for hr in filtered:
+    for hr, dur in zip(filtered, durations):
         if hr is None:
             continue
         if not (30 < hr < 200):
             continue
         hr_r = max((hr - hr_rest) / hr_range, 0.0)
-        total_trimp += (1.0 / 60.0) * hr_r * a * math.exp(b * hr_r)
+        total_trimp += dur * hr_r * a * math.exp(b * hr_r)
         valid += 1
 
     return {
