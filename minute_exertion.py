@@ -52,17 +52,28 @@ SAMPLE_SESSIONS = [
 
 
 # Per-minute max ΔME used for normalisation (one value per exercise)
-NORMALIZATION_MAX_DELTA_ME = {
-    'wall_ball':          12.45,
-    'sandbag_lunges':     17.43,
-    'burpee_broad_jumps': 16.18,
-    'skierg':              8.30,
-    'rowing':              8.30,
-    'farmers_carry':       5.11,
-    'sled_push':           5.54,
-    'sled_pull':           5.54,
-}
+# NORMALIZATION_MAX_DELTA_ME = {
+#     'wall_ball':          12.45,
+#     'sandbag_lunges':     17.43,
+#     'burpee_broad_jumps': 16.18,
+#     'skierg':              8.30,
+#     'rowing':              8.30,
+#     'farmers_carry':       5.11,
+#     'sled_push':           5.54,
+#     'sled_pull':           5.54,
+# }
 
+# new values by mingshu
+NORMALIZATION_MAX_DELTA_ME = {
+    'wall_ball': 5.57,
+    'sandbag_lunges': 7.80,
+    'burpee_broad_jumps': 7.24,
+    'skierg': 3.71,
+    'rowing': 3.71,
+    'farmers_carry': 5.11,
+    'sled_push': 5.54,
+    'sled_pull': 5.54,
+    }
 # ─────────────────────────────────────────────
 # Core V0 Computations
 # ─────────────────────────────────────────────
@@ -83,14 +94,18 @@ def compute_minute_muscular(movement_type, movement_mode, delta_rep=None,
     if movement_mode == 'rep_based':
         t_ref = cfg['t_ref']
         reps = delta_rep if delta_rep is not None else 0
-        delta_T = ALPHA * t_ref * reps + (1.0 - ALPHA)
+
+        if reps > 0:
+            delta_T = (ALPHA * t_ref * reps + (1.0 - ALPHA)*60.0)/60.0
+        else:
+            delta_T = 0.0
     else:
         f_ref = cfg['f_ref']
         f = step_frequency if step_frequency is not None else 0.0
         if f_ref > 0 and f > 0:
             delta_T = min(max(f / f_ref, CADENCE_MIN), CADENCE_MAX)
         else:
-            delta_T = CADENCE_MIN
+            delta_T = 0.0 # should this be 1.0 or 0.0 instead?
 
     return m * delta_T
 
@@ -162,7 +177,10 @@ class MinuteExertionAccumulator:
 
         # normalised muscular exertion for this minute
         norm_factor = NORMALIZATION_MAX_DELTA_ME.get(movement_type, 1.0)
-        norm_delta_me = delta_me / norm_factor if norm_factor else 0.0
+        if norm_factor:
+            norm_delta_me = min(delta_me / norm_factor, 1.0)
+        else:
+            norm_delta_me = 0.0
 
         # cumulate all metrics over the workout
         self._cumulative_muscular += delta_me
@@ -534,13 +552,14 @@ def print_results(results, exercise_type):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Minute-level V0 exertion from sample or real data')
-    parser.add_argument('--mode', choices=['sample', 'real'], default='real',
+    parser.add_argument('--mode', choices=['sample', 'real'], default='sample',
                         help='Data source: "sample" (synthetic) or "real" (real user sessions). Default: sample.')
     parser.add_argument('--exercise', default=None,
                         help='Run a single exercise type (e.g. skierg, wall_ball). Default: all.')
     parser.add_argument('--age',    type=int,   default=32)
     parser.add_argument('--rhr',    type=int,   default=58)
     parser.add_argument('--gender', default='male')
+    parser.add_argument('--hyperparameter_identifier', default='new_max')
     args = parser.parse_args()
 
     hr_max = 207 - 0.7 * args.age
@@ -573,10 +592,10 @@ if __name__ == '__main__':
             plot_minute_exertion(
                 results, exercise_type, hr_ts, hr_vals,
                 run_exertion_result=v1_result,
-                filename=os.path.join(RESULTS_DIR, f'sample_{exercise_type}_minute.png'),
+                filename=os.path.join(RESULTS_DIR, f'sample_{args.hyperparameter_identifier}_{exercise_type}_minute.png'),
                 data_label='Sample Data',
             )
-            save_results_csv(results, f'sample_{exercise_type}')
+            save_results_csv(results, f'sample_{args.hyperparameter_identifier}_{exercise_type}')
 
     else:  # real
         sessions = [s for s in SESSIONS if args.exercise is None or s[1] == args.exercise]
@@ -607,7 +626,7 @@ if __name__ == '__main__':
             plot_minute_exertion(
                 results, exercise_type, hr_ts, hr_vals,
                 run_exertion_result=v1_result,
-                filename=os.path.join(RESULTS_DIR, f'real_{folder}_minute.png'),
+                filename=os.path.join(RESULTS_DIR, f'real_{args.hyperparameter_identifier}_{folder}_minute.png'),
                 data_label='Real User Data',
             )
-            save_results_csv(results, f'real_{folder}')
+            save_results_csv(results, f'real_{args.hyperparameter_identifier}_{folder}')
